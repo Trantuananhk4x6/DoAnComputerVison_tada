@@ -1,21 +1,13 @@
 from app import create_app, socketio
-from app.utils.database import initialize_database, setup_mssql_db
-from app import db
-import os
+import logging
 
-app = create_app()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 if __name__ == '__main__':
-    # Check if we need to initialize DB
-    if os.environ.get('INIT_DB', 'false').lower() == 'true':
-        setup_mssql_db()
-        with app.app_context():
-            initialize_database(app, db)
-    
-    # Determine host and port
-    host = os.environ.get('HOST', '0.0.0.0')
-    port = int(os.environ.get('PORT', '5000'))
-    
-    # Run the app
-    print(f"Starting application on {host}:{port}")
-    socketio.run(app, host=host, port=port, debug=True)
+    app = create_app()
+    print("Starting application server...")
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

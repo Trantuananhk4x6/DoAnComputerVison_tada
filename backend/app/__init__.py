@@ -1,48 +1,51 @@
 from flask import Flask
 from flask_socketio import SocketIO
-from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
 import os
+import logging
 
-# Initialize extensions
+# Thiết lập logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Khởi tạo extensions
 db = SQLAlchemy()
-socketio = SocketIO()
+socketio = SocketIO(cors_allowed_origins="*")
 
 def create_app():
     app = Flask(__name__)
     
-    # Configure the app
-    app.config['SECRET_KEY'] = 'dev_key'
-    # Sử dụng driver SQL Server đã kiểm tra
-    app.config['SQLALCHEMY_DATABASE_URI'] = "mssql+pyodbc://sa:123456789@PCTONY\\SQLEXPRESS/AnimalDetectionDB?driver={SQL Server}&TrustServerCertificate=yes"
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
-    
-    # Create upload directory if it doesn't exist
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    
-    # Initialize extensions with app
+    # Bật CORS cho tất cả các route
     CORS(app)
+    
+    # Cấu hình app trước khi khởi tạo extensions
+    app.config['SECRET_KEY'] = 'your_secret_key'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+    
+    # Đảm bảo thư mục uploads tồn tại
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'original'), exist_ok=True)
+    os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'processed'), exist_ok=True)
+    
+    # Khởi tạo extensions với app hiện tại
     db.init_app(app)
-    socketio.init_app(app, cors_allowed_origins="*")
+    socketio.init_app(app)
     
-    # Import ở đây để tránh circular import
-    from app.models.detection import AnimalDetection
-    
-    # Đơn giản hóa để kiểm tra lỗi trước
-    try:
-        from app.api.routes import api_bp
-        app.register_blueprint(api_bp)
-        print("Đã đăng ký blueprint thành công!")
-    except Exception as e:
-        print(f"Lỗi khi đăng ký blueprint: {e}")
-    
-    # Create database tables
+    # Khởi tạo database tables trong app context
     with app.app_context():
         try:
             db.create_all()
-            print("Đã tạo bảng dữ liệu thành công!")
+            logger.info("Database tables created successfully")
         except Exception as e:
-            print(f"Lỗi khi tạo bảng: {e}")
+            logger.error(f"Error creating database tables: {str(e)}")
+    
+    # Đăng ký blueprints - chuyển vào trong function để tránh circular import
+    with app.app_context():
+        from app.api.routes import api_bp
+        app.register_blueprint(api_bp)
     
     return app

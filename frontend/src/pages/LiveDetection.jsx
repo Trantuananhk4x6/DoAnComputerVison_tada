@@ -1,310 +1,292 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Box, Button, Typography, Paper, Select, MenuItem, FormControl, InputLabel, Switch, FormControlLabel, Alert } from '@mui/material';
+import io from 'socket.io-client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Grid, Paper, Typography, Button, Box, CircularProgress, Switch, FormControlLabel, Select, MenuItem, FormControl, InputLabel, Divider } from '@mui/material';
-import { styled } from '@mui/material/styles';
-import VideocamIcon from '@mui/icons-material/Videocam';
-import StopIcon from '@mui/icons-material/Stop';
-import SettingsIcon from '@mui/icons-material/Settings';
-import { toast } from 'react-toastify';
-
-const StyledPaper = styled(Paper)(({ theme }) => ({
-  padding: theme.spacing(3),
-  display: 'flex',
-  flexDirection: 'column',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-  borderRadius: theme.spacing(2),
-  overflow: 'hidden',
-}));
-
-const VideoDisplay = styled(Box)(({ theme }) => ({
-  width: '100%',
-  height: '100%',
-  backgroundColor: theme.palette.grey[900],
-  borderRadius: theme.spacing(1),
-  overflow: 'hidden',
-  position: 'relative',
-  minHeight: 400,
-}));
-
-const CameraImage = styled('img')(({ theme }) => ({
-  width: '100%',
-  height: '100%',
-  objectFit: 'contain',
-}));
-
-const StatBox = styled(Box)(({ theme, bgcolor }) => ({
-  display: 'flex',
-  alignItems: 'center',
-  padding: theme.spacing(2),
-  borderRadius: theme.spacing(1),
-  backgroundColor: bgcolor,
-  color: 'white',
-  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-  margin: theme.spacing(1, 0),
-}));
-
-const StatValue = styled(Typography)(({ theme }) => ({
-  fontWeight: 'bold',
-  marginLeft: 'auto',
-}));
-
-export default function LiveDetection({ socket }) {
+const LiveDetection = () => {
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [detectionStats, setDetectionStats] = useState({
-    animals: 0,
-    people: 0,
-    lastDetection: null
-  });
-  const [availableCameras, setAvailableCameras] = useState([]);
-  const [selectedCamera, setSelectedCamera] = useState(0);
+  const [cameraId, setCameraId] = useState(0);
   const [autoReconnect, setAutoReconnect] = useState(true);
-  const frameRef = useRef(null);
-  const connectionRetryCount = useRef(0);
-
+  const [error, setError] = useState(null);
+  const [availableCameras, setAvailableCameras] = useState([]);
+  const [status, setStatus] = useState('disconnected');
+  const [reconnecting, setReconnecting] = useState(false);
+  
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const socketRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  
+  // Lấy danh sách camera khả dụng khi component load
   useEffect(() => {
-    // Get available cameras
-    const getCameras = async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        setAvailableCameras(videoDevices);
-      } catch (err) {
-        console.error('Error enumerating devices:', err);
-        toast.error('Could not access camera devices');
-      }
-    };
-    
-    getCameras();
-
-    return () => {
-      // Stop streaming if component unmounts
-      if (isStreaming) {
-        stopCamera();
-      }
-    };
+    fetch('/api/available-cameras')
+      .then(response => response.json())
+      .then(data => {
+        if (data.cameras && data.cameras.length > 0) {
+          setAvailableCameras(data.cameras);
+        } else {
+          console.log('No cameras found');
+        }
+      })
+      .catch(err => {
+        console.error('Error fetching cameras:', err);
+      });
   }, []);
 
+  // Khởi tạo Socket.IO
   useEffect(() => {
-    if (socket) {
-      socket.on('camera_frame', (data) => {
-        if (frameRef.current) {
-          frameRef.current.src = `data:image/jpeg;base64,${data.image}`;
-          
-          // Update detection stats based on the frame (this is a simplistic approach)
-          // In a real app, you'd get this data from the WebSocket as well
-          const now = new Date();
-          setDetectionStats(prev => ({
-            ...prev,
-            lastDetection: now.toLocaleTimeString()
-          }));
-        }
-      });
-
-      socket.on('camera_error', (data) => {
-        toast.error(`Camera error: ${data.error}`);
-        setIsStreaming(false);
-        setIsConnecting(false);
-        
-        // Try to reconnect if auto reconnect is enabled
-        if (autoReconnect && connectionRetryCount.current < 3) {
-          connectionRetryCount.current += 1;
-          toast.info('Attempting to reconnect to camera...');
-          setTimeout(() => {
-            startCamera();
-          }, 2000);
-        }
-      });
-
-      socket.on('animal_detected', (data) => {
-        setDetectionStats(prev => ({
-          ...prev,
-          animals: prev.animals + 1,
-          lastDetection: new Date().toLocaleTimeString()
-        }));
-      });
-
-      return () => {
-        socket.off('camera_frame');
-        socket.off('camera_error');
-        socket.off('animal_detected');
+    socketRef.current = io();
+    
+    // Xử lý nhận frame
+    socketRef.current.on('camera_frame', (data) => {
+      const ctx = canvasRef.current.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        canvasRef.current.width = img.width;
+        canvasRef.current.height = img.height;
+        ctx.drawImage(img, 0, 0);
       };
-    }
-  }, [socket, autoReconnect]);
-
-  const startCamera = () => {
-    setIsConnecting(true);
+      img.src = 'data:image/jpeg;base64,' + data.image;
+      setStatus('streaming');
+      setError(null);
+    });
     
-    // Emit event to start camera stream
-    socket.emit('start_camera', { camera_id: selectedCamera });
-    
-    // Set timeout to prevent UI hanging if connection fails
-    setTimeout(() => {
-      if (isConnecting) {
-        setIsConnecting(false);
-        toast.error('Connection to camera timed out');
+    // Xử lý trạng thái camera
+    socketRef.current.on('camera_status', (data) => {
+      console.log('Camera status:', data);
+      setStatus(data.status);
+      
+      if (data.status === 'connected') {
+        setError(null);
+        setReconnecting(false);
       }
-    }, 10000);
+    });
+    
+    // Xử lý lỗi camera
+    socketRef.current.on('camera_error', (data) => {
+      console.error('Camera error:', data.error);
+      setError(data.error);
+      setStatus('error');
+      
+      // Auto reconnect logic
+      if (autoReconnect && !reconnecting) {
+        setReconnecting(true);
+        console.log('Attempting to reconnect...');
+        
+        // Clear any existing reconnect timer
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+        }
+        
+        // Try to reconnect after 3 seconds
+        reconnectTimerRef.current = setTimeout(() => {
+          if (isStreaming) {
+            console.log('Auto-reconnecting...');
+            stopCamera();
+            setTimeout(() => {
+              startCamera();
+            }, 1000);
+          }
+        }, 3000);
+      }
+    });
+    
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+    };
+  }, [autoReconnect, isStreaming]);
+  
+  // Bắt đầu stream camera
+  const startCamera = () => {
+    if (!socketRef.current) return;
     
     setIsStreaming(true);
-    connectionRetryCount.current = 0;
+    setStatus('connecting');
+    setError(null);
+    
+    console.log(`Starting camera with ID: ${cameraId}`);
+    socketRef.current.emit('start_camera', { camera_id: cameraId });
   };
-
+  
+  // Dừng stream camera
   const stopCamera = () => {
-    socket.emit('stop_camera');
+    if (!socketRef.current) return;
+    
+    socketRef.current.emit('stop_camera');
     setIsStreaming(false);
-    setIsConnecting(false);
+    setStatus('disconnected');
+    
+    // Clear canvas
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+  };
+  
+  // Handle camera change
+  const handleCameraChange = (event) => {
+    setCameraId(event.target.value);
+    
+    // Restart camera if already streaming
+    if (isStreaming) {
+      stopCamera();
+      setTimeout(() => {
+        startCamera();
+      }, 500);
+    }
   };
 
   return (
-    <Grid container spacing={3}>
-      {/* Header */}
-      <Grid item xs={12}>
-        <Typography variant="h4" gutterBottom sx={{ fontWeight: 'bold', color: '#3f51b5' }}>
-          Live Detection
-        </Typography>
-        <Typography variant="body1" gutterBottom sx={{ color: 'text.secondary' }}>
-          Real-time detection of animals and people using your camera.
-        </Typography>
-      </Grid>
-
-      {/* Video Feed */}
-      <Grid item xs={12} md={8}>
-        <StyledPaper sx={{ height: '100%' }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-            <Typography variant="h6">Camera Feed</Typography>
-            <Box>
-              {!isStreaming ? (
-                <Button
-                  variant="contained"
-                  color="primary"
-                  startIcon={<VideocamIcon />}
-                  onClick={startCamera}
-                  disabled={isConnecting}
-                  sx={{ borderRadius: 2 }}
-                >
-                  {isConnecting ? 'Connecting...' : 'Start Camera'}
-                </Button>
-              ) : (
-                <Button
-                  variant="contained"
-                  color="error"
-                  startIcon={<StopIcon />}
-                  onClick={stopCamera}
-                  sx={{ borderRadius: 2 }}
-                >
-                  Stop Camera
-                </Button>
-              )}
-            </Box>
-          </Box>
-          
-          <VideoDisplay>
-            {isConnecting ? (
+    <Box>
+      <Typography variant="h4" component="h1" gutterBottom>
+        Live Detection
+      </Typography>
+      <Typography variant="body1" paragraph>
+        Real-time detection of animals and people using your camera.
+      </Typography>
+      
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+      
+      {reconnecting && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Attempting to reconnect to camera...
+        </Alert>
+      )}
+      
+      <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3 }}>
+        <Box sx={{ flex: 1 }}>
+          <Typography variant="h5" gutterBottom>
+            Camera Feed
+          </Typography>
+          <Paper 
+            sx={{ 
+              p: 1, 
+              bgcolor: 'black', 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center',
+              height: 480, 
+              position: 'relative' 
+            }}
+          >
+            <canvas 
+              ref={canvasRef} 
+              style={{ 
+                maxWidth: '100%', 
+                maxHeight: '100%', 
+                display: status === 'streaming' ? 'block' : 'none' 
+              }} 
+            />
+            
+            {status !== 'streaming' && (
               <Box sx={{ 
-                display: 'flex', 
-                justifyContent: 'center', 
-                alignItems: 'center', 
-                height: '100%' 
+                position: 'absolute', 
+                top: '50%', 
+                left: '50%', 
+                transform: 'translate(-50%, -50%)', 
+                color: 'white', 
+                textAlign: 'center' 
               }}>
-                <CircularProgress />
-              </Box>
-            ) : isStreaming ? (
-              <CameraImage ref={frameRef} alt="Live camera feed" />
-            ) : (
-              <Box sx={{ 
-                display: 'flex', 
-                flexDirection: 'column',
-                justifyContent: 'center', 
-                alignItems: 'center', 
-                height: '100%',
-                color: 'white'
-              }}>
-                <VideocamIcon sx={{ fontSize: 60, mb: 2, opacity: 0.7 }} />
-                <Typography variant="body1" sx={{ opacity: 0.7 }}>
-                  Click "Start Camera" to begin detection
-                </Typography>
+                {status === 'connecting' ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <Box sx={{ 
+                      width: 40, 
+                      height: 40, 
+                      borderRadius: '50%', 
+                      border: '3px solid',
+                      borderColor: 'primary.main',
+                      borderTopColor: 'transparent',
+                      animation: 'spin 1s linear infinite',
+                      '@keyframes spin': {
+                        '0%': { transform: 'rotate(0deg)' },
+                        '100%': { transform: 'rotate(360deg)' }
+                      }
+                    }} />
+                    <Typography sx={{ mt: 2 }}>Connecting to camera...</Typography>
+                  </Box>
+                ) : status === 'error' ? (
+                  <Typography color="error">Camera error. Please check settings and try again.</Typography>
+                ) : (
+                  <Typography>Camera disconnected. Click "Start Camera" to begin.</Typography>
+                )}
               </Box>
             )}
-          </VideoDisplay>
-        </StyledPaper>
-      </Grid>
-      
-      {/* Controls and Stats */}
-      <Grid item xs={12} md={4}>
-        <StyledPaper sx={{ height: '100%' }}>
-          <Typography variant="h6" gutterBottom>
-            Settings & Statistics
-          </Typography>
-          
-          <Box sx={{ mb: 3 }}>
+            
+            <Button 
+              variant="contained" 
+              color={isStreaming ? "error" : "primary"}
+              onClick={isStreaming ? stopCamera : startCamera}
+              sx={{ position: 'absolute', bottom: 16, right: 16 }}
+            >
+              {isStreaming ? 'Stop Camera' : 'Start Camera'}
+            </Button>
+          </Paper>
+        </Box>
+        
+        <Box sx={{ width: { xs: '100%', md: 300 } }}>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="h5" gutterBottom>
+              Settings & Statistics
+            </Typography>
+            
             <Typography variant="subtitle2" gutterBottom>
               Camera Settings
             </Typography>
             
             <FormControl fullWidth sx={{ mb: 2 }}>
-              <InputLabel id="camera-select-label">Camera Source</InputLabel>
+              <InputLabel id="camera-source-label">Camera Source</InputLabel>
               <Select
-                labelId="camera-select-label"
-                value={selectedCamera}
+                labelId="camera-source-label"
+                id="camera-source"
+                value={cameraId}
                 label="Camera Source"
-                onChange={(e) => setSelectedCamera(e.target.value)}
+                onChange={handleCameraChange}
                 disabled={isStreaming}
               >
                 {availableCameras.length > 0 ? (
-                  availableCameras.map((camera, index) => (
-                    <MenuItem key={camera.deviceId} value={index}>
-                      {camera.label || `Camera ${index + 1}`}
+                  availableCameras.map(camera => (
+                    <MenuItem key={camera.id} value={camera.id}>
+                      {camera.name} ({camera.width}x{camera.height})
                     </MenuItem>
                   ))
                 ) : (
-                  <MenuItem value={0}>Default Camera</MenuItem>
+                  <MenuItem value={0}>Camera 1</MenuItem>
                 )}
               </Select>
             </FormControl>
             
             <FormControlLabel
               control={
-                <Switch 
+                <Switch
                   checked={autoReconnect}
                   onChange={(e) => setAutoReconnect(e.target.checked)}
                   color="primary"
                 />
               }
               label="Auto reconnect on failure"
+              sx={{ mb: 2 }}
             />
-          </Box>
-          
-          <Divider sx={{ my: 2 }} />
-          
-          <Typography variant="subtitle2" gutterBottom>
-            Detection Statistics
-          </Typography>
-          
-          <StatBox bgcolor="#ff9800">
-            <Typography variant="body1">Animals Detected</Typography>
-            <StatValue variant="h6">{detectionStats.animals}</StatValue>
-          </StatBox>
-          
-          <StatBox bgcolor="#f50057">
-            <Typography variant="body1">People Detected</Typography>
-            <StatValue variant="h6">{detectionStats.people}</StatValue>
-          </StatBox>
-          
-          <StatBox bgcolor="#3f51b5">
-            <Typography variant="body1">Last Detection</Typography>
-            <StatValue variant="body2">
-              {detectionStats.lastDetection || 'None'}
-            </StatValue>
-          </StatBox>
-          
-          <Box sx={{ mt: 3, p: 2, bgcolor: 'rgba(0, 0, 0, 0.05)', borderRadius: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              <strong>Note:</strong> Animal detections are automatically saved to the database and will appear in the Detection History page.
+            
+            <Typography variant="subtitle2" gutterBottom sx={{ mt: 3 }}>
+              Detection Statistics
             </Typography>
-          </Box>
-        </StyledPaper>
-      </Grid>
-    </Grid>
+            
+            <Typography variant="body2" color="text.secondary">
+              Status: {status.charAt(0).toUpperCase() + status.slice(1)}
+            </Typography>
+          </Paper>
+        </Box>
+      </Box>
+    </Box>
   );
-}
+};
+
+export default LiveDetection;

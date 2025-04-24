@@ -4,7 +4,6 @@ import os
 import time
 import logging
 from ultralytics import YOLO
-import subprocess
 
 # Thiết lập logging
 logger = logging.getLogger(__name__)
@@ -89,109 +88,22 @@ class ObjectDetector:
             
             # Kiểm tra và đặt FPS mặc định nếu giá trị không hợp lệ
             if fps <= 0 or np.isnan(fps):
-                logger.warning("Invalid FPS detected, setting to default 30fps")
-                fps = 30
+                logger.warning("Invalid FPS value, setting to default 30")
+                fps = 30.0
             
-            # Sử dụng MP4V codec cho Linux/Mac
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            
-            logger.info(f"Creating VideoWriter: {width}x{height}, {fps}fps")
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            
-            frame_count = 0
-            all_detections = []
-            
-            # Xử lý từng frame
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                # In frame count mỗi 100 frame
-                if frame_count % 100 == 0:
-                    logger.info(f"Processing frame {frame_count}/{total_frames}")
+            # Sửa: Sử dụng codec XVID thay vì MP4V cho Windows
+            if os.name == 'nt':  # Windows
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                output_temp = output_path.replace('.mp4', '.avi')
+            else:  # Linux/Mac
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                output_temp = output_path
                 
-                # Xử lý frame
-                try:
-                    processed_frame = self.process_frame(frame, is_streaming=False)
-                    
-                    # Lưu frame đã xử lý
-                    out.write(processed_frame)
-                    
-                    # Lấy kết quả phát hiện cho frame hiện tại
-                    results = self.model(frame, verbose=False)
-                    result = results[0]  # Lấy kết quả đầu tiên
-                    
-                    # Thêm vào list tất cả phát hiện
-                    if len(result.boxes) > 0:
-                        for box in result.boxes:
-                            # Lấy tọa độ bounding box
-                            x1, y1, x2, y2 = map(float, box.xyxy[0])
-                            
-                            # Lấy độ tin cậy
-                            conf = float(box.conf[0])
-                            
-                            # Lấy class ID và tên
-                            cls_id = int(box.cls[0])
-                            cls_name = self.model.names[cls_id]
-                            
-                            all_detections.append({
-                                'frame': frame_count,
-                                'class': cls_name,
-                                'confidence': conf,
-                                'box': [x1, y1, x2, y2]
-                            })
-                except Exception as e:
-                    logger.error(f"Error processing frame {frame_count}: {str(e)}")
-                
-                # Cập nhật tiến trình
-                frame_count += 1
-                if progress_callback and total_frames > 0:
-                    progress = int((frame_count / total_frames) * 100)
-                    progress_callback(progress)
-            
-            # Giải phóng resources
-            cap.release()
-            out.release()
-            
-            logger.info(f"Video processing completed: {output_path} with {frame_count} frames")
-            return all_detections
-            
-        except Exception as e:
-            logger.error(f"Error processing video: {str(e)}", exc_info=True)
-            return []
-
-    def process_video_windows(self, input_path, avi_output_path, mp4_output_path, progress_callback=None):
-        """Xử lý video trên Windows, dùng XVID codec và tạo file AVI, sau đó convert sang MP4 nếu có thể"""
-        if self.model is None:
-            logger.error("No model loaded for video processing")
-            return []
-            
-        try:
-            cap = cv2.VideoCapture(input_path)
-            if not cap.isOpened():
-                logger.error(f"Error opening video file: {input_path}")
-                return []
-                
-            # Lấy thông tin video
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            # Kiểm tra và đặt FPS mặc định nếu giá trị không hợp lệ
-            if fps <= 0 or np.isnan(fps):
-                logger.warning("Invalid FPS detected, setting to default 30fps")
-                fps = 30
-            
-            # Sử dụng XVID codec cho Windows
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            
-            logger.info(f"Creating VideoWriter with XVID codec: {width}x{height}, {fps}fps")
-            out = cv2.VideoWriter(avi_output_path, fourcc, fps, (width, height))
+            logger.info(f"Creating VideoWriter: {width}x{height}, {fps}fps, fourcc={fourcc}")
+            out = cv2.VideoWriter(output_temp, fourcc, fps, (width, height))
             
             if not out.isOpened():
-                logger.error(f"Failed to open output video: {avi_output_path}")
+                logger.error(f"Failed to open output video file: {output_temp}")
                 return []
                 
             frame_count = 0
@@ -206,7 +118,7 @@ class ObjectDetector:
                 # In frame count mỗi 100 frame
                 if frame_count % 100 == 0:
                     logger.info(f"Processing frame {frame_count}/{total_frames}")
-                
+                    
                 # Xử lý frame
                 try:
                     processed_frame = self.process_frame(frame, is_streaming=False)
@@ -250,30 +162,26 @@ class ObjectDetector:
             cap.release()
             out.release()
             
-            logger.info(f"Video processing completed to AVI: {avi_output_path}")
+            # Nếu đang chạy trên Windows, chuyển đổi AVI sang MP4 bằng FFmpeg nếu có
+            if os.name == 'nt' and output_temp != output_path:
+                try:
+                    import subprocess
+                    logger.info(f"Converting AVI to MP4: {output_temp} -> {output_path}")
+                    # Kiểm tra xem ffmpeg có sẵn không
+                    ffmpeg_cmd = ['ffmpeg', '-i', output_temp, '-c:v', 'libx264', '-preset', 'fast', 
+                                '-crf', '22', '-c:a', 'aac', output_path]
+                    subprocess.run(ffmpeg_cmd, check=True)
+                    
+                    # Xóa file tạm sau khi chuyển đổi thành công
+                    os.remove(output_temp)
+                    logger.info("Conversion complete and temp file removed")
+                except Exception as e:
+                    logger.error(f"FFmpeg conversion failed: {str(e)}. Using AVI file instead.")
+                    # Nếu chuyển đổi thất bại, sử dụng file AVI và đổi tên nó
+                    os.rename(output_temp, output_path)
             
-            # Chuyển đổi AVI sang MP4 bằng FFmpeg nếu có thể
-            try:
-                # Kiểm tra xem FFmpeg có sẵn không
-                logger.info("Attempting to convert AVI to MP4 using FFmpeg...")
-                ffmpeg_cmd = ['ffmpeg', '-i', avi_output_path, '-c:v', 'libx264', 
-                            '-preset', 'fast', '-crf', '22', '-pix_fmt', 'yuv420p', mp4_output_path]
-                
-                subprocess.run(ffmpeg_cmd, check=True, 
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
-                # Xóa file AVI sau khi chuyển đổi thành công
-                if os.path.exists(mp4_output_path) and os.path.getsize(mp4_output_path) > 0:
-                    os.remove(avi_output_path)
-                    logger.info(f"Conversion successful, deleted AVI file, using MP4: {mp4_output_path}")
-                else:
-                    logger.warning("MP4 conversion created empty file, keeping AVI")
-                    os.rename(avi_output_path, mp4_output_path)
-            except Exception as e:
-                logger.error(f"FFmpeg conversion failed: {str(e)}")
-                logger.warning("Using AVI file directly")
-                os.rename(avi_output_path, mp4_output_path)
-            
+            logger.info(f"Video processing completed: {output_path} with {frame_count} frames")
+            logger.info(f"Detections found: {len(all_detections)}")
             return all_detections
             
         except Exception as e:

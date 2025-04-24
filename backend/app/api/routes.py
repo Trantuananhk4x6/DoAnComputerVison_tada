@@ -5,28 +5,48 @@ import uuid
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
-from app.services.detector import ObjectDetector
-from app import socketio
-from app.models.detection import AnimalDetection
-from app import db
 import base64
+import logging
 
+from app import socketio, db
+from app.models.detection import AnimalDetection
+
+# Thiết lập logging
+logger = logging.getLogger(__name__)
+
+# Định nghĩa Blueprint - phải được định nghĩa ở đầu file
 api_bp = Blueprint('api', __name__, url_prefix='/api')
-detector = ObjectDetector()
+
+# Import ObjectDetector sau khi đã định nghĩa api_bp để tránh circular import
+from app.services.detector import ObjectDetector
+
+# Khởi tạo detector
+try:
+    detector = ObjectDetector()
+    logger.info("ObjectDetector initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing ObjectDetector: {str(e)}")
+    detector = None
 
 # Store active camera streams
 active_streams = {}
 
+
 @api_bp.route('/upload', methods=['POST'])
 def upload_video():
-    if 'video' not in request.files:
-        return jsonify({'error': 'No video file provided'}), 400
-    
-    video_file = request.files['video']
-    if video_file.filename == '':
-        return jsonify({'error': 'No video file selected'}), 400
-    
+    """Upload a video file for processing"""
     try:
+        logger.info(f"Upload request received")
+        
+        if 'video' not in request.files:
+            logger.warning("No video file in request")
+            return jsonify({'error': 'No video file provided'}), 400
+        
+        video_file = request.files['video']
+        if video_file.filename == '':
+            logger.warning("Empty filename")
+            return jsonify({'error': 'No video file selected'}), 400
+        
         # Create directories if they don't exist
         upload_folder = current_app.config['UPLOAD_FOLDER']
         original_dir = os.path.join(upload_folder, 'original')
@@ -41,14 +61,29 @@ def upload_video():
         filename = f"{unique_id}_{original_filename}"
         video_path = os.path.join(original_dir, filename)
         
-        # Save the uploaded video - FIX HERE: changed asave to save
+        logger.info(f"Saving uploaded video to {video_path}")
         video_file.save(video_path)
         
         # Create output path
         output_filename = f"processed_{unique_id}_{original_filename}"
         output_path = os.path.join(processed_dir, output_filename)
         
-        # Process the video (this will emit progress via websocket)
+        # Kiểm tra video sau khi upload
+        try:
+            probe_cap = cv2.VideoCapture(video_path)
+            if not probe_cap.isOpened():
+                logger.warning(f"Uploaded video cannot be opened with OpenCV: {video_path}")
+            else:
+                frame_count = int(probe_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                width = int(probe_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(probe_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = probe_cap.get(cv2.CAP_PROP_FPS)
+                logger.info(f"Uploaded video: {width}x{height}, {fps}fps, {frame_count} frames")
+            probe_cap.release()
+        except Exception as e:
+            logger.warning(f"Error probing video: {str(e)}")
+            
+        # Start processing in background
         session_id = unique_id
         socketio.start_background_task(
             process_video_task, 
@@ -58,26 +93,30 @@ def upload_video():
             original_filename=original_filename
         )
         
+        logger.info(f"Video processing started for session {session_id}")
         return jsonify({
             'message': 'Video upload successful, processing started',
             'session_id': session_id,
             'original_video': filename,
             'processed_video': output_filename
         }), 202
+        
     except Exception as e:
+        logger.error(f"Error in upload_video: {str(e)}", exc_info=True)
         return jsonify({'error': f'Error uploading video: {str(e)}'}), 500
 
 def process_video_task(session_id, video_path, output_path, original_filename):
     """Background task to process a video"""
     try:
-        # Update client that processing has started
+        # Emit processing started event
+        logger.info(f"Starting processing video {session_id}")
         socketio.emit('processing_status', {
             'session_id': session_id,
             'status': 'started',
             'progress': 0
         })
         
-        # Process the video and get frames
+        # Define progress callback
         def progress_callback(progress):
             socketio.emit('processing_status', {
                 'session_id': session_id,
@@ -85,12 +124,28 @@ def process_video_task(session_id, video_path, output_path, original_filename):
                 'progress': progress
             })
         
-        # Xử lý video và lấy kết quả phát hiện
-        detections = detector.process_video(video_path, output_path, progress_callback)
+        # Process the video - sửa để sử dụng XVID trên Windows
+        logger.info(f"Processing video {video_path}")
         
-        # Lấy thumbnail của video
+        # Xử lý video với codec phù hợp cho từng hệ điều hành
+        if os.name == 'nt':  # Nếu là Windows
+            # Đổi output_path tạm thời sang .avi
+            temp_output_path = output_path.replace('.mp4', '.avi')
+            detections = detector.process_video_windows(video_path, temp_output_path, output_path, progress_callback)
+        else:
+            detections = detector.process_video(video_path, output_path, progress_callback)
+        
+        # Create thumbnail
         cap = cv2.VideoCapture(output_path)
         ret, frame = cap.read()
+        
+        # Nếu không thể đọc frame từ output_path, thử đọc từ video gốc
+        if not ret:
+            logger.warning(f"Cannot read frame from processed video, trying original")
+            cap.release()
+            cap = cv2.VideoCapture(video_path)
+            ret, frame = cap.read()
+        
         cap.release()
         
         thumbnail_filename = f"thumbnail_{session_id}.jpg"
@@ -101,18 +156,35 @@ def process_video_task(session_id, video_path, output_path, original_filename):
         
         if ret:
             cv2.imwrite(thumbnail_path, frame)
+            logger.info(f"Thumbnail created: {thumbnail_path}")
+        else:
+            logger.error("Could not create thumbnail - no frames could be read")
         
-        # Notify client that processing is complete
-        socketio.emit('processing_status', {
+        # Emit processing complete event
+        processed_video_url = f'/api/video/processed/{os.path.basename(output_path)}'
+        thumbnail_url = f'/api/thumbnail/{thumbnail_filename}'
+        detections_count = len(detections) if detections else 0
+        
+        logger.info(f"Video processing completed. URL: {processed_video_url}")
+        
+        # Create event data
+        processing_complete_data = {
             'session_id': session_id,
             'status': 'completed',
-            'processed_video_url': f'/api/video/processed/{os.path.basename(output_path)}',
-            'thumbnail_url': f'/api/thumbnail/{thumbnail_filename}',
+            'processed_video_url': processed_video_url,
+            'thumbnail_url': thumbnail_url,
             'original_filename': original_filename,
-            'detections_count': len(detections) if detections else 0
-        })
+            'detections_count': detections_count,
+            'videoId': session_id,  # For frontend compatibility
+            'filename': original_filename,
+            'detections': detections_count
+        }
         
-        # Thêm vào database
+        # Emit events
+        socketio.emit('processing_status', processing_complete_data)
+        socketio.emit('processing_complete', processing_complete_data)
+        
+        # Save to database
         try:
             with current_app.app_context():
                 for detection in detections:
@@ -123,7 +195,9 @@ def process_video_task(session_id, video_path, output_path, original_filename):
                     )
                     db.session.add(db_detection)
                 db.session.commit()
+                logger.info(f"Added {len(detections)} detections to database")
         except Exception as e:
+            logger.error(f"Database update failed: {str(e)}", exc_info=True)
             socketio.emit('processing_status', {
                 'session_id': session_id,
                 'status': 'warning',
@@ -131,6 +205,7 @@ def process_video_task(session_id, video_path, output_path, original_filename):
             })
         
     except Exception as e:
+        logger.error(f"Error in process_video_task: {str(e)}", exc_info=True)
         socketio.emit('processing_status', {
             'session_id': session_id,
             'status': 'error',
@@ -141,8 +216,10 @@ def process_video_task(session_id, video_path, output_path, original_filename):
 def get_processed_video(filename):
     """Serve a processed video file"""
     video_path = os.path.join(current_app.config['UPLOAD_FOLDER'], 'processed', filename)
+    logger.info(f"Serving processed video from {video_path}")
     if os.path.exists(video_path):
         return send_file(video_path)
+    logger.error(f"Video file not found: {video_path}")
     return jsonify({'error': 'Video not found'}), 404
 
 @api_bp.route('/video/original/<filename>')
@@ -161,10 +238,47 @@ def get_thumbnail(filename):
         return send_file(thumbnail_path)
     return jsonify({'error': 'Thumbnail not found'}), 404
 
+@api_bp.route('/download/<video_id>')
+def download_video(video_id):
+    """Download processed video file"""
+    try:
+        # Find file with pattern 'processed_<video_id>_*'
+        processed_dir = os.path.join(current_app.config['UPLOAD_FOLDER'], 'processed')
+        for filename in os.listdir(processed_dir):
+            if filename.startswith(f"processed_{video_id}_"):
+                video_path = os.path.join(processed_dir, filename)
+                return send_file(video_path, as_attachment=True, download_name=filename)
+        
+        return jsonify({'error': 'Video not found'}), 404
+    except Exception as e:
+        logger.error(f"Error in download_video: {str(e)}", exc_info=True)
+        return jsonify({'error': f'Error downloading video: {str(e)}'}), 500
+
 @api_bp.route('/detections')
 def get_detections():
     """Get all animal detections from the database"""
     try:
+        # Kiểm tra xem bảng có tồn tại không
+        from app.models.detection import AnimalDetection
+        from sqlalchemy import inspect
+        
+        inspector = inspect(db.engine)
+        if not inspector.has_table('animal_detection'):
+            # Tạo bảng nếu nó không tồn tại
+            with db.engine.connect() as connection:
+                db.create_all()
+                logger.info("Created table 'animal_detection' as it was not found")
+            
+            # Trả về kết quả rỗng
+            return jsonify({
+                'detections': [],
+                'total': 0,
+                'pages': 0,
+                'current_page': 1,
+                'message': 'Database initialized, no records yet'
+            })
+        
+        # Nếu bảng tồn tại, thực hiện truy vấn
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 20, type=int)
         
@@ -179,29 +293,37 @@ def get_detections():
             'current_page': page
         })
     except Exception as e:
-        return jsonify({'error': f'Error fetching detections: {str(e)}'}), 500
-
+        logger.error(f"Error fetching detections: {str(e)}", exc_info=True)
+        
+        # Trả về phản hồi lỗi thân thiện với người dùng
+        return jsonify({
+            'error': f'Error fetching detections: {str(e)}',
+            'detections': [],
+            'total': 0,
+            'pages': 0,
+            'current_page': 1
+        }), 500
 @api_bp.route('/health')
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'ok'}), 200
 
+# Camera handling with Socket.IO
 @socketio.on('start_camera')
 def handle_start_camera(data):
     """Start camera stream for a particular client"""
     client_id = request.sid
     camera_id = data.get('camera_id', 0)  # Default to camera 0
     
-    # Log khi có request mới
-    print(f"Starting camera stream for client {client_id}, camera {camera_id}")
+    logger.info(f"Starting camera stream for client {client_id}, camera {camera_id}")
     
-    # Gửi thông báo nhận request
+    # Notify client that connection is being established
     socketio.emit('camera_status', {
         'status': 'connecting',
         'message': f'Connecting to camera {camera_id}'
-    }, to=client_id)
+    }, room=client_id)
     
-    # Start the camera in a background thread
+    # Start streaming in background thread
     socketio.start_background_task(
         stream_camera, 
         client_id=client_id,
@@ -211,20 +333,57 @@ def handle_start_camera(data):
 def stream_camera(client_id, camera_id):
     """Stream from camera with object detection"""
     try:
-        print(f"Opening camera {camera_id} for client {client_id}")
+        logger.info(f"Opening camera {camera_id} for client {client_id}")
         
-        # Thử mở camera với backend
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            print(f"Failed to open camera {camera_id}")
+        # Thử nhiều phương thức truy cập camera khác nhau
+        cap = None
+        error_msg = ""
+        
+        # Phương thức 1: OpenCV thông thường
+        try:
+            cap = cv2.VideoCapture(int(camera_id))
+            if cap.isOpened():
+                ret, test_frame = cap.read()
+                if not ret:
+                    cap.release()
+                    cap = None
+                    error_msg = "Could not read initial frame"
+            else:
+                error_msg = "Could not open camera with default method"
+        except Exception as e:
+            error_msg = f"Error accessing camera: {str(e)}"
+        
+        # Phương thức 2: Nếu là Windows, thử với DirectShow
+        if cap is None and os.name == 'nt':
+            try:
+                cap = cv2.VideoCapture(int(camera_id), cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    ret, test_frame = cap.read()
+                    if not ret:
+                        cap.release()
+                        cap = None
+                        error_msg = "Could not read initial frame with DirectShow"
+                else:
+                    error_msg = "Could not open camera with DirectShow"
+            except Exception as e:
+                error_msg = f"Error accessing camera with DirectShow: {str(e)}"
+        
+        # Nếu vẫn không thể mở camera
+        if cap is None or not cap.isOpened():
+            logger.error(f"Failed to open camera {camera_id}: {error_msg}")
             socketio.emit('camera_error', {
-                'error': f'Cannot open camera {camera_id}. Please check if camera is connected.'
+                'error': f'Cannot open camera {camera_id}. {error_msg}'
             }, room=client_id)
             return
             
-        print(f"Successfully opened camera {camera_id}")
+        logger.info(f"Successfully opened camera {camera_id}")
         
-        # Thông báo camera đã mở thành công
+        # Thiết lập thuộc tính camera
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Notify client that camera is connected
         socketio.emit('camera_status', {
             'status': 'connected',
             'message': f'Connected to camera {camera_id}'
@@ -241,73 +400,92 @@ def stream_camera(client_id, camera_id):
         
         while active_streams.get(client_id, {}).get('active', False):
             try:
+                # Đọc frame với timeout
+                start_time = time.time()
                 ret, frame = cap.read()
+                
+                # Nếu đã cố gắng đọc frame quá 2 giây mà không thành công
+                if time.time() - start_time > 2:
+                    logger.warning(f"Frame read timeout for camera {camera_id}")
+                    error_count += 1
+                    continue
+                
                 if not ret:
                     error_count += 1
-                    if error_count >= 5:  # Nếu lỗi 5 lần liên tiếp thì thông báo
-                        print(f"Too many errors reading from camera {camera_id}")
+                    logger.warning(f"Could not read frame from camera {camera_id}, error count: {error_count}")
+                    if error_count >= 5:
+                        logger.error(f"Too many errors reading from camera {camera_id}")
                         socketio.emit('camera_error', {
                             'error': 'Cannot read frames from camera'
                         }, room=client_id)
                         break
+                    time.sleep(0.1)
                     continue
                 
-                error_count = 0  # Reset error count nếu đọc frame thành công
+                error_count = 0  # Reset error counter
                 
-                # Chỉ xử lý phát hiện đối tượng mỗi 5 frames để giảm tải CPU
+                # Process frame with detection (every 3 frames to reduce CPU load)
                 frame_count += 1
-                if frame_count % 5 == 0:
-                    processed_frame = detector.process_frame(frame, f"camera:{camera_id}", is_streaming=True)
+                if frame_count % 3 == 0 and detector is not None:
+                    try:
+                        processed_frame = detector.process_frame(frame, is_streaming=True)
+                    except Exception as e:
+                        logger.error(f"Error processing frame: {str(e)}")
+                        processed_frame = frame
                 else:
                     processed_frame = frame
                 
-                # Giảm kích thước frame để giảm tải mạng
-                width = int(processed_frame.shape[1] * 0.8)  # Giảm còn 80% kích thước
-                height = int(processed_frame.shape[0] * 0.8)
-                processed_frame = cv2.resize(processed_frame, (width, height))
+                # Resize frame to reduce bandwidth
+                height, width = processed_frame.shape[:2]
+                scale = 0.75  # Reduce to 75% of original size
+                processed_frame = cv2.resize(processed_frame, (int(width*scale), int(height*scale)))
                 
-                # Chuyển đổi sang JPEG và encode base64
+                # Compress and encode frame
                 _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                 
-                # Gửi frame đến client
+                # Send frame to client
                 socketio.emit('camera_frame', {
                     'image': jpg_as_text
                 }, room=client_id)
                 
-                # Tạm dừng một chút để tránh quá tải
-                time.sleep(0.033)  # ~30 FPS
+                # Pause briefly
+                time.sleep(0.033)  # ~30 fps
             
             except Exception as e:
-                print(f"Error in stream_camera: {str(e)}")
+                logger.error(f"Error in stream_camera: {str(e)}", exc_info=True)
                 error_count += 1
                 if error_count >= 5:
                     socketio.emit('camera_error', {
                         'error': f'Stream error: {str(e)}'
                     }, room=client_id)
                     break
-                time.sleep(0.1)  # Tạm dừng khi có lỗi
+                time.sleep(0.1)
     
     except Exception as e:
-        print(f"Exception in stream_camera: {str(e)}")
+        logger.error(f"Exception in stream_camera: {str(e)}", exc_info=True)
         socketio.emit('camera_error', {
             'error': f'Camera error: {str(e)}'
         }, room=client_id)
     
     finally:
-        # Cleanup resources
+        # Clean up resources
         if client_id in active_streams:
             if active_streams[client_id].get('cap'):
-                active_streams[client_id]['cap'].release()
-                print(f"Released camera {camera_id} for client {client_id}")
+                try:
+                    active_streams[client_id]['cap'].release()
+                    logger.info(f"Released camera {camera_id} for client {client_id}")
+                except Exception as e:
+                    logger.error(f"Error releasing camera: {str(e)}")
             del active_streams[client_id]
-            
+
 @socketio.on('stop_camera')
 def handle_stop_camera():
     """Stop camera stream for a client"""
     client_id = request.sid
     if client_id in active_streams:
         active_streams[client_id]['active'] = False
+        logger.info(f"Stopped camera stream for client {client_id}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -315,3 +493,69 @@ def handle_disconnect():
     client_id = request.sid
     if client_id in active_streams:
         active_streams[client_id]['active'] = False
+        logger.info(f"Client {client_id} disconnected, cleaning up resources")
+
+@api_bp.route('/processed-videos')
+def get_processed_videos():
+    """Return a list of all processed videos"""
+    try:
+        processed_dir = os.path.join(current_app.config['UPLOAD_FOLDER'], 'processed')
+        videos = []
+        
+        # Lấy tất cả các file trong thư mục processed
+        if os.path.exists(processed_dir):
+            for filename in os.listdir(processed_dir):
+                # Chỉ lấy các file video mp4 bắt đầu với "processed_"
+                if filename.startswith('processed_') and filename.endswith('.mp4'):
+                    # Tạo đường dẫn đầy đủ đến file
+                    file_path = os.path.join(processed_dir, filename)
+                    
+                    # Lấy thông tin file
+                    file_info = {
+                        'filename': filename,
+                        'url': f'/api/video/processed/{filename}',
+                        'size': os.path.getsize(file_path),
+                        'created': os.path.getctime(file_path),
+                        'thumbnail': f'/api/thumbnail/thumbnail_{filename.split("_")[1].split(".")[0]}.jpg'
+                    }
+                    
+                    # Thêm vào danh sách
+                    videos.append(file_info)
+        
+        # Sắp xếp theo thời gian tạo mới nhất
+        videos.sort(key=lambda x: x['created'], reverse=True)
+        
+        return jsonify({
+            'videos': videos,
+            'count': len(videos)
+        })
+    except Exception as e:
+        logger.error(f"Error fetching processed videos: {str(e)}")
+        return jsonify({'error': str(e), 'videos': []}), 500
+
+@api_bp.route('/available-cameras')
+def list_available_cameras():
+    """List all available camera devices"""
+    try:
+        available_cameras = []
+        # Kiểm tra 5 camera đầu tiên
+        for i in range(5):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    available_cameras.append({
+                        'id': i,
+                        'name': f'Camera {i}',
+                        'width': int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        'height': int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    })
+                cap.release()
+        
+        return jsonify({
+            'cameras': available_cameras,
+            'count': len(available_cameras)
+        })
+    except Exception as e:
+        logger.error(f"Error listing cameras: {str(e)}")
+        return jsonify({'error': str(e), 'cameras': []}), 500
