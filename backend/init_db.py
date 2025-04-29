@@ -1,5 +1,5 @@
 from app import create_app, db
-from app.models.detection import AnimalDetection
+from app.models.detection import AnimalDetection, ObjectTracking
 
 def init_database():
     app = create_app()

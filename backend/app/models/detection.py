@@ -20,3 +20,23 @@ class AnimalDetection(db.Model):
             'video_source': self.video_source,
             'timestamp': self.timestamp.isoformat()
         }
+
+class ObjectTracking(db.Model):
+    """Model cho lưu trữ số lượng object"""
+    __tablename__ = 'object_tracking'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    object_type = db.Column(db.String(50), nullable=False)  # e.g., 'person', 'animal'
+    count = db.Column(db.Integer, nullable=False)
+    source = db.Column(db.String(50), nullable=False)  # 'video' hoặc 'realtime'
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        """Convert model to dictionary"""
+        return {
+            'id': self.id,
+            'object_type': self.object_type,
+            'count': self.count,
+            'source': self.source,
+            'timestamp': self.timestamp.isoformat()
+        }
