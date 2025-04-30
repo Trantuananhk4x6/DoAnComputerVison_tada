@@ -4,6 +4,7 @@ import os
 import time
 import logging
 from ultralytics import YOLO
+from deep_sort_realtime.deepsort_tracker import DeepSort
 import subprocess
 
 # Thiết lập logging
@@ -11,37 +12,43 @@ logger = logging.getLogger(__name__)
 
 class ObjectDetector:
     def __init__(self):
-        """Khởi tạo detector với mô hình YOLOv8"""
+        """Khởi tạo detector với mô hình YOLOv8 và DeepSORT tracker"""
         # Đường dẫn đến model
         model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
                                  'model', 'best.pt')
         
         try:
-            # Tải model
+            # Tải model YOLOv8
             logger.info(f"Loading YOLOv8 model from: {model_path}")
             self.model = YOLO(model_path)
             logger.info(f"Model loaded successfully: {model_path}")
+            
+            # Khởi tạo DeepSORT tracker
+            self.tracker = DeepSort(max_age=30, n_init=3, nn_budget=100)
+            logger.info("DeepSORT tracker initialized")
         except Exception as e:
             logger.error(f"Error loading model: {str(e)}")
             self.model = None
+            self.tracker = None
 
     def process_frame(self, frame, source=None, is_streaming=True):
-        """Xử lý một frame và trả về kết quả phát hiện"""
+        """Xử lý một frame và trả về kết quả phát hiện và tracking"""
         if self.model is None:
             return frame  # Trả về frame gốc nếu model không tồn tại
         
         try:
             # Thực hiện phát hiện đối tượng với YOLOv8
             results = self.model(frame, verbose=False)
-            
-            # YOLOv8 trả về list of Results objects
             result = results[0]  # Lấy kết quả đầu tiên
+            
+            # Tạo danh sách detections cho DeepSORT
+            detections = []
             
             # Vẽ các bounding boxes lên frame
             if len(result.boxes) > 0:
                 for box in result.boxes:
                     # Lấy tọa độ bounding box
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    x1, y1, x2, y2 = map(float, box.xyxy[0])
                     
                     # Lấy độ tin cậy
                     conf = float(box.conf[0])
@@ -50,85 +57,62 @@ class ObjectDetector:
                     cls_id = int(box.cls[0])
                     cls_name = self.model.names[cls_id]
                     
-                    # Màu dựa vào loại đối tượng
-                    if 'animal' in cls_name.lower() or 'dog' in cls_name.lower() or 'cat' in cls_name.lower():
-                        color = (0, 255, 0)  # Xanh lá cho động vật
-                    else:
-                        color = (0, 0, 255)  # Đỏ cho người hoặc đối tượng khác
-                    
-                    # Vẽ bounding box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Thêm text
-                    label = f"{cls_name}: {conf:.2f}"
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    # Thêm vào danh sách detections cho DeepSORT
+                    detections.append(([x1, y1, x2, y2], conf, cls_name))
             
-            return frame
+            # Cập nhật tracker với các detections mới
+            tracks = self.tracker.update_tracks(detections, frame=frame)
+            
+            # Vẽ các bounding boxes và track IDs lên frame
+            for track in tracks:
+                if not track.is_confirmed():
+                    continue
+                
+                track_id = track.track_id
+                ltrb = track.to_ltrb()
+                x1, y1, x2, y2 = map(int, ltrb)
+                
+                # Màu dựa vào loại đối tượng
+                class_name = track.get_det_class()
+                if class_name and ('animal' in class_name.lower() or 'dog' in class_name.lower() or 'cat' in class_name.lower()):
+                    color = (0, 255, 0)  # Xanh lá cho động vật
+                else:
+                    color = (0, 0, 255)  # Đỏ cho người hoặc đối tượng khác
+                
+                # Vẽ bounding box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Thêm text với ID
+                label = f"{class_name}: {track_id}"
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            return frame, tracks
             
         except Exception as e:
             logger.error(f"Error in process_frame: {str(e)}")
-            return frame
-
-    def analyze_video(self, video_path, sample_frames=10):
-        """Phân tích video để đếm người và động vật"""
-        if self.model is None:
-            logger.error("No model loaded for video analysis")
-            return {'person_count': 0, 'animal_count': 0}
-            
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                logger.error(f"Error opening video file: {video_path}")
-                return {'person_count': 0, 'animal_count': 0}
-                
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            frame_step = max(1, total_frames // sample_frames)
-            
-            person_count = 0
-            animal_count = 0
-            
-            for i in range(0, total_frames, frame_step):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                # Phát hiện đối tượng
-                results = self.model(frame, verbose=False)
-                result = results[0]  # Lấy kết quả đầu tiên
-                
-                # Đếm đối tượng
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = self.model.names[cls_id]
-                    
-                    if cls_name.lower() == 'person':
-                        person_count += 1
-                    elif 'animal' in cls_name.lower() or 'dog' in cls_name.lower() or 'cat' in cls_name.lower():
-                        animal_count += 1
-            
-            cap.release()
-            
-            return {
-                'person_count': person_count,
-                'animal_count': animal_count
-            }
-            
-        except Exception as e:
-            logger.error(f"Error analyzing video: {str(e)}", exc_info=True)
-            return {'person_count': 0, 'animal_count': 0}
+            return frame, []
 
     def process_video(self, input_path, output_path, progress_callback=None):
-        """Xử lý video và trả về kết quả phát hiện"""
+        """Xử lý video và trả về kết quả phát hiện và tracking"""
         if self.model is None:
             logger.error("No model loaded for video processing")
-            return []
+            return {
+                'detections': [],
+                'tracks': {},
+                'person_count': 0,
+                'animal_count': 0
+            }
             
         try:
             cap = cv2.VideoCapture(input_path)
             if not cap.isOpened():
                 logger.error(f"Error opening video file: {input_path}")
-                return []
+                return {
+                    'detections': [],
+                    'tracks': {},
+                    'person_count': 0,
+                    'animal_count': 0
+                }
                 
             # Lấy thông tin video
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -152,12 +136,21 @@ class ObjectDetector:
             
             if not out.isOpened():
                 logger.error(f"Failed to create VideoWriter for: {output_path}")
-                return []
+                return {
+                    'detections': [],
+                    'tracks': {},
+                    'person_count': 0,
+                    'animal_count': 0
+                }
             
             frame_count = 0
             all_detections = []
-            person_count = 0
-            animal_count = 0
+            all_tracks = {}
+            total_person_count = 0
+            total_animal_count = 0
+            
+            # Khởi tạo DeepSORT tracker
+            tracker = DeepSort(max_age=30, n_init=3, nn_budget=100)
             
             # Xử lý từng frame
             while cap.isOpened():
@@ -175,11 +168,14 @@ class ObjectDetector:
                     results = self.model(frame, verbose=False)
                     result = results[0]  # Lấy kết quả đầu tiên
                     
-                    # Vẽ các bounding boxes lên frame
+                    # Tạo danh sách detections cho DeepSORT
+                    detections = []
+                    
+                    # Xử lý các bounding boxes
                     if len(result.boxes) > 0:
                         for box in result.boxes:
                             # Lấy tọa độ bounding box
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            x1, y1, x2, y2 = map(float, box.xyxy[0])
                             
                             # Lấy độ tin cậy
                             conf = float(box.conf[0])
@@ -188,24 +184,8 @@ class ObjectDetector:
                             cls_id = int(box.cls[0])
                             cls_name = self.model.names[cls_id]
                             
-                            # Đếm người và động vật
-                            if cls_name.lower() == 'person':
-                                person_count += 1
-                            elif 'animal' in cls_name.lower() or 'dog' in cls_name.lower() or 'cat' in cls_name.lower():
-                                animal_count += 1
-                            
-                            # Màu dựa vào loại đối tượng
-                            if 'animal' in cls_name.lower() or 'dog' in cls_name.lower() or 'cat' in cls_name.lower():
-                                color = (0, 255, 0)  # Xanh lá cho động vật
-                            else:
-                                color = (0, 0, 255)  # Đỏ cho người hoặc đối tượng khác
-                            
-                            # Vẽ bounding box
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                            
-                            # Thêm text
-                            label = f"{cls_name}: {conf:.2f}"
-                            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            # Thêm vào danh sách detections cho DeepSORT
+                            detections.append(([x1, y1, x2, y2], conf, cls_name))
                             
                             # Thêm vào list phát hiện
                             all_detections.append({
@@ -214,6 +194,65 @@ class ObjectDetector:
                                 'confidence': conf,
                                 'box': [x1, y1, x2, y2]
                             })
+                    
+                    # Cập nhật tracker với các detections mới
+                    tracks = tracker.update_tracks(detections, frame=frame)
+                    
+                    # Vẽ các bounding boxes và track IDs lên frame
+                    frame_tracks = {}
+                    
+                    for track in tracks:
+                        if not track.is_confirmed():
+                            continue
+                            
+                        track_id = track.track_id
+                        ltrb = track.to_ltrb()
+                        x1, y1, x2, y2 = map(int, ltrb)
+                        
+                        # Lấy class name từ track
+                        class_name = track.get_det_class()
+                        
+                        # Đếm người và động vật riêng biệt theo track_id
+                        if class_name:
+                            if track_id not in all_tracks:
+                                # Ghi nhận track mới
+                                all_tracks[track_id] = {
+                                    'class': class_name,
+                                    'first_frame': frame_count,
+                                    'last_frame': frame_count,
+                                    'positions': []
+                                }
+                                
+                                # Đếm số lượng người và động vật theo ID duy nhất
+                                if class_name.lower() == 'person':
+                                    total_person_count += 1
+                                elif 'animal' in class_name.lower() or 'dog' in class_name.lower() or 'cat' in class_name.lower():
+                                    total_animal_count += 1
+                            else:
+                                # Cập nhật track hiện có
+                                all_tracks[track_id]['last_frame'] = frame_count
+                            
+                            # Lưu lại vị trí hiện tại
+                            all_tracks[track_id]['positions'].append([frame_count, x1, y1, x2, y2])
+                            
+                            # Lưu thông tin track cho frame hiện tại
+                            frame_tracks[track_id] = {
+                                'class': class_name,
+                                'box': [x1, y1, x2, y2]
+                            }
+                        
+                        # Màu dựa vào loại đối tượng
+                        if class_name and ('animal' in class_name.lower() or 'dog' in class_name.lower() or 'cat' in class_name.lower()):
+                            color = (0, 255, 0)  # Xanh lá cho động vật
+                        else:
+                            color = (0, 0, 255)  # Đỏ cho người hoặc đối tượng khác
+                        
+                        # Vẽ bounding box
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Thêm text với ID
+                        label = f"{class_name}: {track_id}"
+                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                     
                     # Lưu frame đã xử lý
                     out.write(frame)
@@ -262,18 +301,22 @@ class ObjectDetector:
                     if os.path.exists(temp_output_path):
                         os.rename(temp_output_path, output_path)
                     
-            logger.info(f"Video processing completed, detected: {person_count} people, {animal_count} animals")
+            logger.info(f"Video processing completed, unique tracks: {len(all_tracks)}, persons: {total_person_count}, animals: {total_animal_count}")
             
             return {
-                'all_detections': all_detections,
-                'person_count': person_count,
-                'animal_count': animal_count
+                'detections': all_detections,
+                'tracks': all_tracks,
+                'person_count': total_person_count,
+                'animal_count': total_animal_count,
+                'total_frames': frame_count
             }
             
         except Exception as e:
             logger.error(f"Error processing video: {str(e)}", exc_info=True)
             return {
-                'all_detections': [],
+                'detections': [],
+                'tracks': {},
                 'person_count': 0,
-                'animal_count': 0
+                'animal_count': 0,
+                'error': str(e)
             }

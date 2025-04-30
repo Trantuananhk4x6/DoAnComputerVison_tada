@@ -13,7 +13,6 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
   Divider,
   Grid,
@@ -23,6 +22,14 @@ import {
   Snackbar,
   Typography,
   Tooltip,
+  Tabs,
+  Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from '@mui/material';
 import {
   CloudUpload as CloudUploadIcon,
@@ -32,8 +39,7 @@ import {
   Close as CloseIcon,
   PeopleOutline as PeopleIcon,
   Pets as PetsIcon,
-  Folder as FolderIcon,
-  GetApp as ImportIcon,
+  Timeline as TimelineIcon,
 } from '@mui/icons-material';
 
 // Styled components
@@ -87,6 +93,80 @@ const PlayOverlay = styled(Box)({
   },
 });
 
+// Simple tracking visualization component
+const TrackingVisualizer = ({ tracks, totalFrames }) => {
+  const canvasRef = useRef(null);
+  
+  useEffect(() => {
+    if (!canvasRef.current || !tracks || Object.keys(tracks).length === 0) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    // Draw timeline
+    ctx.fillStyle = '#eee';
+    ctx.fillRect(0, 0, width, height);
+    
+    // Map frame index to x position
+    const frameToX = (frame) => (frame / totalFrames) * width;
+    
+    // Draw tracks
+    Object.entries(tracks).forEach(([trackId, trackData], index) => {
+      // Get track info
+      const isAnimal = trackData.class && (
+        'animal' in trackData.class.toLowerCase() || 
+        'dog' in trackData.class.toLowerCase() || 
+        'cat' in trackData.class.toLowerCase()
+      );
+      
+      // Determine color (red for people, green for animals)
+      ctx.strokeStyle = isAnimal ? 'green' : 'red';
+      ctx.lineWidth = 3;
+      
+      // Draw track line
+      const startX = frameToX(trackData.first_frame);
+      const endX = frameToX(trackData.last_frame);
+      const y = 20 + (index % 10) * 15; // Space tracks vertically
+      
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(endX, y);
+      ctx.stroke();
+      
+      // Draw track ID
+      ctx.font = '10px Arial';
+      ctx.fillStyle = isAnimal ? 'green' : 'red';
+      ctx.fillText(`ID:${trackId} (${trackData.class})`, startX, y - 5);
+    });
+    
+  }, [tracks, totalFrames]);
+  
+  return (
+    <Box sx={{ width: '100%', mt: 2 }}>
+      <Typography variant="subtitle1" gutterBottom>
+        Visualization of Tracks Over Time
+      </Typography>
+      <Paper sx={{ p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+        <canvas 
+          ref={canvasRef}
+          width={800}
+          height={200}
+          style={{ width: '100%', height: 'auto' }}
+        />
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
+          <Typography variant="caption">Start</Typography>
+          <Typography variant="caption">End</Typography>
+        </Box>
+      </Paper>
+    </Box>
+  );
+};
+
 const VideoProcessing = () => {
   // State variables
   const [selectedFile, setSelectedFile] = useState(null);
@@ -94,7 +174,6 @@ const VideoProcessing = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processedVideos, setProcessedVideos] = useState([]);
-  const [filesystemVideos, setFilesystemVideos] = useState([]);
   const [viewingVideo, setViewingVideo] = useState(null);
   const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
   const [videoToDelete, setVideoToDelete] = useState(null);
@@ -104,50 +183,74 @@ const VideoProcessing = () => {
     severity: 'info',
   });
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [tabValue, setTabValue] = useState(0);
+  const [trackingData, setTrackingData] = useState(null);
+  const [loadingTracking, setLoadingTracking] = useState(false);
+  const [detections, setDetections] = useState([]);
   const fileInputRef = useRef(null);
 
   // Fetch processed videos on component mount
   useEffect(() => {
     fetchProcessedVideos();
-    fetchFilesystemVideos();
+    fetchDetections();
   }, []);
 
-  // Fetch videos from database
+  // Fetch videos from API
   const fetchProcessedVideos = async () => {
     try {
       setRefreshing(true);
-      setError(null);
+      setErrorMessage(null);
       
-      // API endpoint
-      const response = await axios.get('/api/videos/processed');
-      console.log('API response from database:', response.data);
+      const response = await axios.get('/api/processed-videos');
+      console.log("API response:", response.data);
       
-      setProcessedVideos(response.data || []);
+      if (response.data && Array.isArray(response.data.videos)) {
+        setProcessedVideos(response.data.videos);
+      } else {
+        setProcessedVideos([]);
+      }
       setRefreshing(false);
     } catch (error) {
       console.error('Error fetching processed videos:', error);
-      setError(`Không thể tải danh sách video từ cơ sở dữ liệu: ${error.message}`);
+      setErrorMessage(
+        `Lỗi tải danh sách video: ${error.response?.data?.error || error.message}`
+      );
       setProcessedVideos([]);
       setRefreshing(false);
     }
   };
 
-  // Fetch videos directly from filesystem
-  const fetchFilesystemVideos = async () => {
+  // Fetch all detections
+  const fetchDetections = async () => {
     try {
-      const response = await axios.get('/api/videos/filesystem');
-      console.log('API response from filesystem:', response.data);
-      
-      setFilesystemVideos(response.data || []);
+      const response = await axios.get('/api/detections');
+      if (response.data && Array.isArray(response.data.detections)) {
+        setDetections(response.data.detections);
+      }
     } catch (error) {
-      console.error('Error fetching filesystem videos:', error);
+      console.error('Error fetching detections:', error);
+    }
+  };
+
+  // Fetch tracking data for a video
+  const fetchTrackingData = async (videoId) => {
+    if (!videoId) return;
+    
+    try {
+      setLoadingTracking(true);
+      const response = await axios.get(`/api/video/tracking/${videoId}`);
+      setTrackingData(response.data);
+      setLoadingTracking(false);
+    } catch (error) {
+      console.error('Error fetching tracking data:', error);
+      setTrackingData(null);
+      setLoadingTracking(false);
       setSnackbar({
         open: true,
-        message: 'Không thể tải danh sách video từ hệ thống file',
-        severity: 'error',
+        message: `Không thể tải dữ liệu tracking: ${error.response?.data?.error || error.message}`,
+        severity: 'warning',
       });
-      setFilesystemVideos([]);
     }
   };
 
@@ -183,16 +286,14 @@ const VideoProcessing = () => {
 
     setIsUploading(true);
     setUploadProgress(0);
-    setError(null);
+    setErrorMessage(null);
 
     const formData = new FormData();
     formData.append('video', selectedFile);
 
     try {
-      console.log('Sending upload request to /api/videos/upload');
-      
       // Upload video
-      const uploadResponse = await axios.post('/api/videos/upload', formData, {
+      const uploadResponse = await axios.post('/api/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -206,43 +307,34 @@ const VideoProcessing = () => {
 
       console.log('Upload response:', uploadResponse.data);
       
-      // Process video
       setIsUploading(false);
-      setIsProcessing(true);
+      setSnackbar({
+        open: true,
+        message: `Video tải lên thành công. Phát hiện ${uploadResponse.data.person_count || 0} người và ${uploadResponse.data.animal_count || 0} động vật.`,
+        severity: 'success',
+      });
       
-      const videoId = uploadResponse.data.videoId;
-      const processResponse = await axios.post(`/api/videos/process/${videoId}`);
-      
-      console.log('Process response:', processResponse.data);
-      
-      // Reset states
+      // Reset selected file
       setSelectedFile(null);
-      setIsProcessing(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
       
-      setSnackbar({
-        open: true,
-        message: 'Video xử lý thành công',
-        severity: 'success',
-      });
-      
-      // Refresh both video lists
-      fetchProcessedVideos();
-      fetchFilesystemVideos();
+      // Refresh the processed videos list
+      setTimeout(() => {
+        fetchProcessedVideos();
+        fetchDetections();
+      }, 1000);
       
     } catch (error) {
-      console.error('Error uploading or processing video:', error);
+      console.error('Error uploading video:', error);
       setIsUploading(false);
-      setIsProcessing(false);
       
-      const errorMessage = error.response?.data?.error || error.message;
-      setError(`Lỗi khi tải lên hoặc xử lý video: ${errorMessage}`);
+      setErrorMessage(`Lỗi tải lên: ${error.response?.data?.error || error.message}`);
       
       setSnackbar({
         open: true,
-        message: `Lỗi: ${errorMessage}`,
+        message: `Lỗi tải lên video: ${error.response?.data?.error || error.message}`,
         severity: 'error',
       });
     }
@@ -250,10 +342,17 @@ const VideoProcessing = () => {
 
   const handleViewVideo = (video) => {
     setViewingVideo(video);
+    setTabValue(0);
+    if (video.id && video.has_tracking_data) {
+      fetchTrackingData(video.id);
+    } else {
+      setTrackingData(null);
+    }
   };
 
   const handleCloseViewer = () => {
     setViewingVideo(null);
+    setTrackingData(null);
   };
 
   const confirmDelete = (video) => {
@@ -265,13 +364,7 @@ const VideoProcessing = () => {
     if (!videoToDelete) return;
     
     try {
-      if (videoToDelete.isFilesystemOnly) {
-        // Delete video from filesystem only
-        await axios.delete(`/api/videos/filesystem/${videoToDelete.filename}`);
-      } else {
-        // Delete video from database and filesystem
-        await axios.delete(`/api/videos/${videoToDelete.id}`);
-      }
+      await axios.delete(`/api/video/delete/${videoToDelete.id}`);
       
       setSnackbar({
         open: true,
@@ -284,61 +377,26 @@ const VideoProcessing = () => {
       setVideoToDelete(null);
       
       // If the deleted video is currently being viewed, close the viewer
-      if (viewingVideo && (
-        (viewingVideo.id && videoToDelete.id && viewingVideo.id === videoToDelete.id) || 
-        (viewingVideo.filename && videoToDelete.filename && viewingVideo.filename === videoToDelete.filename)
-      )) {
+      if (viewingVideo && viewingVideo.id === videoToDelete.id) {
         setViewingVideo(null);
       }
       
-      // Refresh the lists of videos
+      // Refresh the list of videos
       fetchProcessedVideos();
-      fetchFilesystemVideos();
+      fetchDetections();
       
     } catch (error) {
       console.error('Error deleting video:', error);
       setSnackbar({
         open: true,
-        message: `Lỗi khi xóa video: ${error.message}`,
+        message: `Lỗi khi xóa video: ${error.response?.data?.error || error.message}`,
         severity: 'error',
       });
     }
   };
 
-  const handleImportVideo = async (filesystemVideo) => {
-    try {
-      setIsProcessing(true);
-      
-      await axios.post('/api/videos/import', { 
-        filename: filesystemVideo.filename,
-        filepath: filesystemVideo.filepath
-      });
-      
-      setIsProcessing(false);
-      setSnackbar({
-        open: true,
-        message: 'Đã import video vào cơ sở dữ liệu thành công',
-        severity: 'success',
-      });
-      
-      // If video was being viewed, close viewer
-      if (viewingVideo && viewingVideo.filename === filesystemVideo.filename) {
-        setViewingVideo(null);
-      }
-      
-      // Refresh both lists
-      fetchProcessedVideos();
-      fetchFilesystemVideos();
-      
-    } catch (error) {
-      console.error('Error importing video:', error);
-      setIsProcessing(false);
-      setSnackbar({
-        open: true,
-        message: `Lỗi khi import video: ${error.message}`,
-        severity: 'error',
-      });
-    }
+  const handleTabChange = (event, newValue) => {
+    setTabValue(newValue);
   };
 
   const handleCloseSnackbar = () => {
@@ -347,52 +405,27 @@ const VideoProcessing = () => {
 
   const handleRefresh = () => {
     fetchProcessedVideos();
-    fetchFilesystemVideos();
+    fetchDetections();
   };
-
-  const getVideoThumbnail = (video) => {
-    if (video.isFilesystemOnly) {
-      return `/api/videos/filesystem/thumbnail/${video.filename}`;
-    }
-    return `/api/videos/thumbnail/${video.id}`;
-  };
-
-  const getVideoStreamUrl = (video) => {
-    if (video.isFilesystemOnly) {
-      return `/api/videos/filesystem/stream/${video.filename}`;
-    }
-    return `/api/videos/stream/${video.id}`;
-  };
-
-  // Check if a filesystem video is already in the database
-  const isVideoInDatabase = (filename) => {
-    return processedVideos.some(dbVideo => 
-      dbVideo.processed_file_path && dbVideo.processed_file_path.includes(filename)
-    );
-  };
-
-  // Filter out filesystem videos that are already in the database
-  const uniqueFilesystemVideos = filesystemVideos.filter(
-    fsVideo => !isVideoInDatabase(fsVideo.filename)
-  );
-
-  // Determine if we should show the "no videos" message
-  const noVideosAvailable = processedVideos.length === 0 && uniqueFilesystemVideos.length === 0;
   
   // Format date for display
-  const formatDate = (dateString) => {
-    if (!dateString) return 'Unknown';
+  const formatDate = (timestamp) => {
+    if (!timestamp) return 'Unknown';
     try {
-      const date = new Date(dateString);
-      return date.toLocaleString();
+      // Try to parse as Unix timestamp first
+      if (typeof timestamp === 'number') {
+        return new Date(timestamp * 1000).toLocaleString();
+      }
+      // Try to parse as ISO string
+      return new Date(timestamp).toLocaleString();
     } catch (e) {
-      return dateString;
+      return 'Unknown';
     }
   };
   
   // Format file size in KB, MB, etc.
   const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
+    if (!bytes) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -441,7 +474,7 @@ const VideoProcessing = () => {
               onClick={handleUpload}
               disabled={!selectedFile || isUploading || isProcessing}
             >
-              {isUploading ? `ĐANG TẢI LÊN... ${uploadProgress}%` : isProcessing ? 'ĐANG XỬ LÝ...' : 'XỬ LÝ VIDEO'}
+              {isUploading ? `ĐANG TẢI LÊN... ${uploadProgress}%` : 'XỬ LÝ VIDEO VỚI YOLO + TRACKING'}
             </Button>
           </Grid>
           
@@ -465,22 +498,13 @@ const VideoProcessing = () => {
               </Box>
             </Grid>
           )}
-          
-          {isProcessing && (
-            <Grid item xs={12} sx={{ textAlign: 'center', py: 2 }}>
-              <CircularProgress size={40} thickness={4} />
-              <Typography variant="body2" sx={{ mt: 1 }}>
-                Đang phân tích video với mô hình YOLO...
-              </Typography>
-            </Grid>
-          )}
         </Grid>
       </Paper>
 
-      {/* Error display if needed */}
-      {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
-          {error}
+      {/* Error message if exists */}
+      {errorMessage && (
+        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setErrorMessage(null)}>
+          {errorMessage}
         </Alert>
       )}
 
@@ -488,108 +512,139 @@ const VideoProcessing = () => {
       <Dialog
         open={!!viewingVideo}
         onClose={handleCloseViewer}
-        maxWidth="md"
+        maxWidth="lg"
         fullWidth
-        PaperProps={{
-          elevation: 5,
-          sx: { borderRadius: 2 }
-        }}
       >
         {viewingVideo && (
           <>
-            <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="h6" component="h2" noWrap sx={{ maxWidth: '90%' }}>
-                {viewingVideo.name || viewingVideo.filename}
-              </Typography>
-              <IconButton onClick={handleCloseViewer} size="small">
-                <CloseIcon />
-              </IconButton>
+            <DialogTitle>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="h6">{viewingVideo.name || viewingVideo.filename}</Typography>
+                <IconButton onClick={handleCloseViewer} size="small">
+                  <CloseIcon />
+                </IconButton>
+              </Box>
             </DialogTitle>
             <DialogContent>
-              <Box sx={{ position: 'relative', width: '100%', mb: 2 }}>
-                <video
-                  controls
-                  width="100%"
-                  autoPlay
-                  src={getVideoStreamUrl(viewingVideo)}
-                  style={{ borderRadius: '4px' }}
-                />
-              </Box>
-              <Grid container spacing={2}>
-                {!viewingVideo.isFilesystemOnly && (
-                  <>
-                    <Grid item xs={12} sm={6}>
-                      <Paper sx={{ p: 2, display: 'flex', alignItems: 'center', bgcolor: '#f5f5f5' }}>
-                        <PeopleIcon color="primary" sx={{ mr: 1 }} />
-                        <Typography variant="subtitle1">
-                          <strong>Số người:</strong> {viewingVideo.person_count || 0}
-                        </Typography>
-                      </Paper>
+              <Tabs value={tabValue} onChange={handleTabChange} sx={{ mb: 2 }}>
+                <Tab label="Video" />
+                {viewingVideo.has_tracking_data && <Tab label="Tracking Data" />}
+              </Tabs>
+              
+              {tabValue === 0 && (
+                <>
+                  <video
+                    controls
+                    width="100%"
+                    autoPlay
+                    src={viewingVideo.url}
+                    style={{ borderRadius: '4px' }}
+                  />
+                  
+                  <Box sx={{ mt: 2 }}>
+                    <Grid container spacing={2} sx={{ mb: 2 }}>
+                      <Grid item xs={6}>
+                        <Paper sx={{ p: 2, display: 'flex', alignItems: 'center' }}>
+                          <PeopleIcon color="primary" sx={{ mr: 1 }} />
+                          <Typography><strong>Số người:</strong> {viewingVideo.person_count || 0}</Typography>
+                        </Paper>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Paper sx={{ p: 2, display: 'flex', alignItems: 'center' }}>
+                          <PetsIcon color="secondary" sx={{ mr: 1 }} />
+                          <Typography><strong>Số động vật:</strong> {viewingVideo.animal_count || 0}</Typography>
+                        </Paper>
+                      </Grid>
                     </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <Paper sx={{ p: 2, display: 'flex', alignItems: 'center', bgcolor: '#f5f5f5' }}>
-                        <PetsIcon color="secondary" sx={{ mr: 1 }} />
-                        <Typography variant="subtitle1">
-                          <strong>Số động vật:</strong> {viewingVideo.animal_count || 0}
-                        </Typography>
-                      </Paper>
-                    </Grid>
-                  </>
-                )}
-                <Grid item xs={12}>
-                  <Box sx={{ mt: 1 }}>
-                    {viewingVideo.isFilesystemOnly ? (
-                      <>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Vị trí:</strong> {viewingVideo.filepath}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Kích thước:</strong> {formatFileSize(viewingVideo.size)}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Ngày tạo:</strong> {formatDate(viewingVideo.created)}
-                        </Typography>
-                        <Typography variant="body2" color="primary" sx={{ mt: 1 }}>
-                          File này chỉ tồn tại trong hệ thống file và chưa được phân tích. Sử dụng chức năng "Import" để phân tích và thêm vào cơ sở dữ liệu.
-                        </Typography>
-                      </>
-                    ) : (
-                      <>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Xử lý lúc:</strong> {formatDate(viewingVideo.processed_at)}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Tên gốc:</strong> {viewingVideo.name}
-                        </Typography>
-                      </>
-                    )}
+                    
+                    <Typography variant="body2" color="text.secondary">
+                      <strong>Kích thước:</strong> {formatFileSize(viewingVideo.size)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      <strong>Ngày tạo:</strong> {formatDate(viewingVideo.created)}
+                    </Typography>
                   </Box>
-                </Grid>
-              </Grid>
+                </>
+              )}
+              
+              {tabValue === 1 && (
+                <Box sx={{ mt: 2 }}>
+                  {loadingTracking ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                      <CircularProgress />
+                    </Box>
+                  ) : trackingData ? (
+                    <>
+                      <Box sx={{ mb: 3 }}>
+                        <Grid container spacing={2}>
+                          <Grid item xs={12} md={6}>
+                            <Paper sx={{ p: 2, bgcolor: '#f5f5f5' }}>
+                              <Typography variant="subtitle1" gutterBottom>Thông tin Tracking</Typography>
+                              <Typography variant="body2">
+                                <strong>Tổng số object tracks:</strong> {Object.keys(trackingData.tracks || {}).length}
+                              </Typography>
+                              <Typography variant="body2">
+                                <strong>Số người (unique):</strong> {trackingData.person_count || 0}
+                              </Typography>
+                              <Typography variant="body2">
+                                <strong>Số động vật (unique):</strong> {trackingData.animal_count || 0}
+                              </Typography>
+                              <Typography variant="body2">
+                                <strong>Tổng số frames:</strong> {trackingData.total_frames || 0}
+                              </Typography>
+                            </Paper>
+                          </Grid>
+                        </Grid>
+                      </Box>
+                      
+                      <TrackingVisualizer 
+                        tracks={trackingData.tracks} 
+                        totalFrames={trackingData.total_frames} 
+                      />
+                      
+                      <Paper sx={{ mt: 3 }}>
+                        <TableContainer>
+                          <Typography variant="subtitle1" sx={{ p: 2 }}>Chi tiết Object Tracking</Typography>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Track ID</TableCell>
+                                <TableCell>Loại</TableCell>
+                                <TableCell>Frame bắt đầu</TableCell>
+                                <TableCell>Frame kết thúc</TableCell>
+                                <TableCell>Thời gian xuất hiện</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {trackingData.tracks && Object.entries(trackingData.tracks).map(([trackId, data]) => (
+                                <TableRow key={trackId}>
+                                  <TableCell>{trackId}</TableCell>
+                                  <TableCell>{data.class}</TableCell>
+                                  <TableCell>{data.first_frame}</TableCell>
+                                  <TableCell>{data.last_frame}</TableCell>
+                                  <TableCell>{data.last_frame - data.first_frame + 1} frames</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Paper>
+                    </>
+                  ) : (
+                    <Alert severity="info">
+                      Không có dữ liệu tracking cho video này. Video cần được upload và xử lý với YOLOv8 + DeepSORT.
+                    </Alert>
+                  )}
+                </Box>
+              )}
             </DialogContent>
-            <DialogActions sx={{ p: 2 }}>
-              <Button
-                variant="outlined"
-                onClick={handleCloseViewer}
-              >
+            <DialogActions>
+              <Button onClick={handleCloseViewer}>
                 Đóng
               </Button>
-              {viewingVideo.isFilesystemOnly && (
-                <Button
-                  variant="contained"
-                  color="primary"
-                  startIcon={<ImportIcon />}
-                  onClick={() => {
-                    handleCloseViewer();
-                    handleImportVideo(viewingVideo);
-                  }}
-                >
-                  Import
-                </Button>
-              )}
-              <Button
+              <Button 
+                color="error" 
                 variant="contained"
-                color="error"
                 startIcon={<DeleteIcon />}
                 onClick={() => {
                   handleCloseViewer();
@@ -621,7 +676,7 @@ const VideoProcessing = () => {
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
           <CircularProgress />
         </Box>
-      ) : noVideosAvailable ? (
+      ) : processedVideos.length === 0 ? (
         <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 2 }}>
           <Typography variant="body1" color="text.secondary">
             Chưa có video nào được xử lý. Hãy tải lên video để bắt đầu.
@@ -629,12 +684,11 @@ const VideoProcessing = () => {
         </Paper>
       ) : (
         <Grid container spacing={3}>
-          {/* Database Videos */}
-          {processedVideos.map((video) => (
-            <Grid item xs={12} sm={6} md={4} key={`db-${video.id}`}>
+          {processedVideos.map((video, index) => (
+            <Grid item xs={12} sm={6} md={4} key={index}>
               <StyledVideoCard>
                 <ThumbnailContainer
-                  image={getVideoThumbnail(video)}
+                  image={video.thumbnail || '/static/video-placeholder.jpg'}
                   title={video.name}
                 >
                   <PlayOverlay onClick={() => handleViewVideo(video)}>
@@ -650,9 +704,16 @@ const VideoProcessing = () => {
                   </PlayOverlay>
                 </ThumbnailContainer>
                 <CardContent sx={{ flexGrow: 1 }}>
-                  <Typography variant="subtitle1" component="h3" gutterBottom noWrap sx={{ fontWeight: 'medium' }}>
-                    {video.name}
-                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="subtitle1" component="h3" noWrap sx={{ flexGrow: 1, fontWeight: 'medium' }}>
+                      {video.name}
+                    </Typography>
+                    {video.has_tracking_data && (
+                      <Tooltip title="Video has tracking data">
+                        <TimelineIcon color="primary" fontSize="small" />
+                      </Tooltip>
+                    )}
+                  </Box>
                   
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2" color="text.secondary">
@@ -666,7 +727,7 @@ const VideoProcessing = () => {
                   </Box>
                   
                   <Typography variant="caption" color="text.secondary" display="block">
-                    Xử lý: {formatDate(video.processed_at)}
+                    {formatDate(video.created)}
                   </Typography>
                 </CardContent>
                 <Divider />
@@ -690,66 +751,6 @@ const VideoProcessing = () => {
               </StyledVideoCard>
             </Grid>
           ))}
-
-          {/* Filesystem-only Videos */}
-          {uniqueFilesystemVideos.map((video) => (
-            <Grid item xs={12} sm={6} md={4} key={`fs-${video.filename}`}>
-              <StyledVideoCard sx={{ border: '1px dashed #ccc' }}>
-                <ThumbnailContainer
-                  image={getVideoThumbnail(video)}
-                  title={video.filename}
-                >
-                  <PlayOverlay onClick={() => handleViewVideo(video)}>
-                    <IconButton
-                      size="large"
-                      sx={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                        '&:hover': { backgroundColor: 'rgba(255, 255, 255, 1)' },
-                      }}
-                    >
-                      <PlayArrowIcon fontSize="large" />
-                    </IconButton>
-                  </PlayOverlay>
-                </ThumbnailContainer>
-                <CardContent sx={{ flexGrow: 1 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                    <Tooltip title="Video chỉ tồn tại trong hệ thống file">
-                      <FolderIcon fontSize="small" color="action" sx={{ mr: 1 }} />
-                    </Tooltip>
-                    <Typography variant="subtitle1" component="h3" noWrap sx={{ fontWeight: 'medium' }}>
-                      {video.filename}
-                    </Typography>
-                  </Box>
-                  
-                  <Typography variant="body2" color="text.secondary">
-                    <strong>Kích thước:</strong> {formatFileSize(video.size)}
-                  </Typography>
-                  
-                  <Typography variant="caption" color="info.main" display="block" sx={{ mt: 1 }}>
-                    *Tìm thấy trong thư mục processed (chưa có trong cơ sở dữ liệu)
-                  </Typography>
-                </CardContent>
-                <Divider />
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', p: 1 }}>
-                  <Button
-                    size="small"
-                    startIcon={<PlayArrowIcon />}
-                    onClick={() => handleViewVideo(video)}
-                  >
-                    Xem
-                  </Button>
-                  <Button
-                    size="small"
-                    color="primary"
-                    startIcon={<ImportIcon />}
-                    onClick={() => handleImportVideo(video)}
-                  >
-                    Import
-                  </Button>
-                </Box>
-              </StyledVideoCard>
-            </Grid>
-          ))}
         </Grid>
       )}
 
@@ -757,22 +758,18 @@ const VideoProcessing = () => {
       <Dialog
         open={openDeleteDialog}
         onClose={() => setOpenDeleteDialog(false)}
-        aria-labelledby="delete-dialog-title"
-        aria-describedby="delete-dialog-description"
       >
-        <DialogTitle id="delete-dialog-title">
-          Xác nhận xóa
-        </DialogTitle>
+        <DialogTitle>Xác nhận xóa</DialogTitle>
         <DialogContent>
-          <DialogContentText id="delete-dialog-description">
-            Bạn có chắc chắn muốn xóa "{videoToDelete?.name || videoToDelete?.filename}"? Hành động này không thể hoàn tác.
-          </DialogContentText>
+          <Typography>
+            Bạn có chắc chắn muốn xóa video "{videoToDelete?.name || videoToDelete?.filename}"? Hành động này không thể hoàn tác.
+          </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenDeleteDialog(false)} color="primary">
+          <Button onClick={() => setOpenDeleteDialog(false)}>
             Hủy
           </Button>
-          <Button onClick={handleDeleteVideo} color="error" variant="contained" autoFocus>
+          <Button onClick={handleDeleteVideo} color="error" variant="contained">
             Xóa
           </Button>
         </DialogActions>
