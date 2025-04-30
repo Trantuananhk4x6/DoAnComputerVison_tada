@@ -1,171 +1,106 @@
-from app import db
 from datetime import datetime
-import json
+from app import db
 
 class AnimalDetection(db.Model):
-    """Model for storing animal detections"""
-    __tablename__ = 'animal_detection'
-    
     id = db.Column(db.Integer, primary_key=True)
+    video_source = db.Column(db.String(255), nullable=False)
+    video_id = db.Column(db.String(50), nullable=False)
     class_name = db.Column(db.String(50), nullable=False)
     confidence = db.Column(db.Float, nullable=False)
-    video_source = db.Column(db.String(255), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    
+    frame_number = db.Column(db.Integer, nullable=True)
+    x1 = db.Column(db.Integer, nullable=True)
+    y1 = db.Column(db.Integer, nullable=True)
+    x2 = db.Column(db.Integer, nullable=True)
+    y2 = db.Column(db.Integer, nullable=True)
+    track_id = db.Column(db.Integer, nullable=True)
+
     def to_dict(self):
         return {
             'id': self.id,
+            'video_source': self.video_source,
+            'video_id': self.video_id,
             'class_name': self.class_name,
             'confidence': self.confidence,
-            'video_source': self.video_source,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+            'timestamp': self.timestamp.isoformat(),
+            'frame_number': self.frame_number,
+            'box': [self.x1, self.y1, self.x2, self.y2] if self.x1 is not None else None,
+            'track_id': self.track_id
         }
 
-class ObjectTracking(db.Model):
-    """Model for storing object tracking data"""
-    __tablename__ = 'object_tracking'
-    
+class ProcessedVideo(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    object_type = db.Column(db.String(50), nullable=False)
-    count = db.Column(db.Integer, default=1)
-    source = db.Column(db.String(255), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    video_id = db.Column(db.String(50), nullable=False, unique=True)
+    filename = db.Column(db.String(255), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False) 
+    processed_filename = db.Column(db.String(255), nullable=False)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=True)
+    filesize = db.Column(db.Integer, nullable=True)
+    duration = db.Column(db.Float, nullable=True)
+    person_count = db.Column(db.Integer, default=0)
+    animal_count = db.Column(db.Integer, default=0)
+    total_frames = db.Column(db.Integer, nullable=True)
+    fps = db.Column(db.Float, nullable=True)
+    resolution = db.Column(db.String(20), nullable=True)
+    has_tracking_data = db.Column(db.Boolean, default=False)
     
     def to_dict(self):
         return {
             'id': self.id,
-            'object_type': self.object_type,
-            'count': self.count,
-            'source': self.source,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+            'video_id': self.video_id,
+            'filename': self.filename,
+            'original_filename': self.original_filename,
+            'processed_filename': self.processed_filename,
+            'uploaded_at': self.uploaded_at.isoformat(),
+            'processed_at': self.processed_at.isoformat() if self.processed_at else None,
+            'filesize': self.filesize,
+            'duration': self.duration,
+            'person_count': self.person_count,
+            'animal_count': self.animal_count,
+            'total_frames': self.total_frames,
+            'fps': self.fps,
+            'resolution': self.resolution,
+            'has_tracking_data': self.has_tracking_data
         }
 
-# Functions for the VideoProcessing component
-def save_detection(video_id, detection_type, count, detection_time=None):
-    """Save a detection to the database"""
-    try:
-        if detection_time is None:
-            detection_time = datetime.utcnow()
-        
-        # Create database connection
-        conn = db.engine.connect()
-        
-        # Insert into detection_history
-        query = """
-        INSERT INTO detection_history (video_id, detection_type, count, detection_time) 
-        VALUES (:video_id, :detection_type, :count, :detection_time)
-        """
-        conn.execute(query, {
-            'video_id': video_id,
-            'detection_type': detection_type,
-            'count': count,
-            'detection_time': detection_time
-        })
-        
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error saving detection: {str(e)}")
-        return False
-
-def get_processed_videos():
-    """Get all processed videos from the database"""
-    try:
-        # Create database connection
-        conn = db.engine.connect()
-        
-        # Query videos
-        query = """
-        SELECT id, name, processed_file_path, upload_date, processed_at, person_count, animal_count, thumbnail_path 
-        FROM videos 
-        WHERE status = 'completed' 
-        ORDER BY processed_at DESC
-        """
-        result = conn.execute(query)
-        
-        videos = []
-        for row in result:
-            videos.append({
-                'id': row[0],
-                'name': row[1],
-                'processed_file_path': row[2],
-                'upload_date': row[3],
-                'processed_at': row[4],
-                'person_count': row[5],
-                'animal_count': row[6],
-                'thumbnail_path': row[7]
-            })
-        
-        conn.close()
-        return videos
-    except Exception as e:
-        print(f"Error getting processed videos: {str(e)}")
-        return []
-
-def delete_video(video_id):
-    """Delete a video and related data from the database"""
-    try:
-        # Create database connection
-        conn = db.engine.connect()
-        
-        # Get file paths
-        query = """
-        SELECT file_path, processed_file_path, thumbnail_path FROM videos WHERE id = :video_id
-        """
-        result = conn.execute(query, {'video_id': video_id}).first()
-        
-        if not result:
-            conn.close()
-            return False, "Video not found"
-        
-        file_path, processed_path, thumbnail_path = result
-        
-        # Delete from database
-        conn.execute("DELETE FROM detection_history WHERE video_id = :video_id", {'video_id': video_id})
-        conn.execute("DELETE FROM tracking_data WHERE video_id = :video_id", {'video_id': video_id})
-        conn.execute("DELETE FROM videos WHERE id = :video_id", {'video_id': video_id})
-        
-        conn.close()
-        
-        # Return paths for file deletion
-        return True, {
-            'file_path': file_path,
-            'processed_path': processed_path,
-            'thumbnail_path': thumbnail_path
-        }
-    except Exception as e:
-        print(f"Error deleting video: {str(e)}")
-        return False, str(e)
-
-def get_video_by_id(video_id):
-    """Get video details by ID"""
-    try:
-        # Create database connection
-        conn = db.engine.connect()
-        
-        # Query video
-        query = """
-        SELECT id, name, processed_file_path, upload_date, processed_at, person_count, animal_count, thumbnail_path 
-        FROM videos 
-        WHERE id = :video_id
-        """
-        result = conn.execute(query, {'video_id': video_id}).first()
-        
-        conn.close()
-        
-        if not result:
-            return None
-        
+class TrackedObject(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    video_id = db.Column(db.String(50), nullable=False)
+    track_id = db.Column(db.Integer, nullable=False)
+    class_name = db.Column(db.String(50), nullable=False)
+    first_frame = db.Column(db.Integer, nullable=False)
+    last_frame = db.Column(db.Integer, nullable=False)
+    avg_confidence = db.Column(db.Float, nullable=True)
+    
+    def to_dict(self):
         return {
-            'id': result[0],
-            'name': result[1],
-            'processed_file_path': result[2],
-            'upload_date': result[3],
-            'processed_at': result[4],
-            'person_count': result[5],
-            'animal_count': result[6],
-            'thumbnail_path': result[7]
+            'id': self.id,
+            'video_id': self.video_id,
+            'track_id': self.track_id,
+            'class_name': self.class_name,
+            'first_frame': self.first_frame,
+            'last_frame': self.last_frame,
+            'avg_confidence': self.avg_confidence,
+            'duration_frames': self.last_frame - self.first_frame + 1
         }
-    except Exception as e:
-        print(f"Error getting video: {str(e)}")
-        return None
+
+class TrackingHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    video_id = db.Column(db.String(50), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    person_count = db.Column(db.Integer, default=0)
+    animal_count = db.Column(db.Integer, default=0)
+    total_objects = db.Column(db.Integer, default=0)
+    total_frames = db.Column(db.Integer, nullable=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'video_id': self.video_id,
+            'timestamp': self.timestamp.isoformat(),
+            'person_count': self.person_count,
+            'animal_count': self.animal_count,
+            'total_objects': self.total_objects,
+            'total_frames': self.total_frames
+        }

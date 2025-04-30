@@ -1,7 +1,8 @@
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO
-from flask_cors import CORS
+from flask_migrate import Migrate
 
+# Initialize SQLAlchemy
 db = SQLAlchemy()
-socketio = SocketIO()
-cors = CORS()
+
+# Initialize Flask-Migrate
+migrate = Migrate()
