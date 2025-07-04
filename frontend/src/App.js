@@ -1,14 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
 // Import các components đã tạo trước đó
-import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import VideoProcessing from './pages/VideoProcessing';
-import LiveDetection from './pages/LiveDetection';
-import DetectionHistory from './pages/DetectionHistory';
+import AppLayout from './components/AppLayout';
+import Dashboard from './components/Dashboard';
+import VideoProcessing from './components/VideoProcessing';
+import TrackingHistory from './components/TrackingHistory';
+import FormulaDemo from './components/FormulaDemo';
 import NotFound from './components/NotFound';
 
 // Create light and dark theme
@@ -59,3 +59,37 @@ const createAppTheme = (mode) => createTheme({
     MuiPaper: {
       styleOverrides: {
         root: {
+          borderRadius: 8,
+        },
+      },
+    },
+  },
+});
+
+function App() {
+  const [mode, setMode] = useState('light');
+
+  const handleThemeChange = () => {
+    setMode(mode === 'light' ? 'dark' : 'light');
+  };
+
+  const theme = createAppTheme(mode);
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Routes>
+        <Route path="/" element={<AppLayout mode={mode} onThemeChange={handleThemeChange} />}>
+          <Route index element={<Navigate to="/dashboard" />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="video-processing" element={<VideoProcessing />} />
+          <Route path="tracking-history" element={<TrackingHistory />} />
+          <Route path="formula-demo" element={<FormulaDemo />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
+      </Routes>
+    </ThemeProvider>
+  );
+}
+
+export default App;
