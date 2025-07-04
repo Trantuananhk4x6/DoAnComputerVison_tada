@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
@@ -8,6 +8,7 @@ import AppLayout from './components/AppLayout';
 import Dashboard from './components/Dashboard';
 import VideoProcessing from './components/VideoProcessing';
 import TrackingHistory from './components/TrackingHistory';
+import FormulaDemo from './components/FormulaDemo';
 import NotFound from './components/NotFound';
 
 // Create light and dark theme
@@ -77,17 +78,16 @@ function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Router>
-        <AppLayout mode={mode} onThemeChange={handleThemeChange}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/video-processing" element={<VideoProcessing />} />
-            <Route path="/tracking-history" element={<TrackingHistory />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AppLayout>
-      </Router>
+      <Routes>
+        <Route path="/" element={<AppLayout mode={mode} onThemeChange={handleThemeChange} />}>
+          <Route index element={<Navigate to="/dashboard" />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="video-processing" element={<VideoProcessing />} />
+          <Route path="tracking-history" element={<TrackingHistory />} />
+          <Route path="formula-demo" element={<FormulaDemo />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
+      </Routes>
     </ThemeProvider>
   );
 }

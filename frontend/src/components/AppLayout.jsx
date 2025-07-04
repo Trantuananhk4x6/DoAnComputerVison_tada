@@ -48,7 +48,7 @@ const pageVariants = {
   exit: { opacity: 0, y: -10, transition: { duration: 0.2 } }
 };
 
-const AppLayout = ({ toggleTheme, mode }) => {
+const AppLayout = ({ mode, onThemeChange }) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const location = useLocation();
@@ -103,6 +103,7 @@ const AppLayout = ({ toggleTheme, mode }) => {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Xử Lý Video', icon: <MovieIcon />, path: '/video-processing' },
     { text: 'Lịch Sử Tracking', icon: <TimelineIcon />, path: '/tracking-history' },
+    { text: 'Formula Demo', icon: <SettingsIcon />, path: '/formula-demo' },
   ];
   
   return (
@@ -154,7 +155,7 @@ const AppLayout = ({ toggleTheme, mode }) => {
             
             {/* Theme toggle */}
             <Tooltip title={`Chuyển sang chế độ ${mode === 'dark' ? 'sáng' : 'tối'}`}>
-              <IconButton color="inherit" onClick={toggleTheme} sx={{ mr: 1 }}>
+              <IconButton color="inherit" onClick={onThemeChange} sx={{ mr: 1 }}>
                 {mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}
               </IconButton>
             </Tooltip>
