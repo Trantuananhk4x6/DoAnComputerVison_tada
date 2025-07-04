@@ -1,15 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Routes, Route } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
-// Import các components đã tạo trước đó
-import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import VideoProcessing from './pages/VideoProcessing';
-import LiveDetection from './pages/LiveDetection';
-import DetectionHistory from './pages/DetectionHistory';
-import NotFound from './components/NotFound';
+// Import only the test component
+import TestFormulaSystem from './components/TestFormulaSystem';
 
 // Create light and dark theme
 const createAppTheme = (mode) => createTheme({
@@ -59,3 +54,27 @@ const createAppTheme = (mode) => createTheme({
     MuiPaper: {
       styleOverrides: {
         root: {
+          borderRadius: 8,
+        },
+      },
+    },
+  },
+});
+
+function App() {
+  const [themeMode, setThemeMode] = useState('light');
+
+  const theme = createAppTheme(themeMode);
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Routes>
+        <Route path="/" element={<TestFormulaSystem />} />
+        <Route path="*" element={<TestFormulaSystem />} />
+      </Routes>
+    </ThemeProvider>
+  );
+}
+
+export default App;
