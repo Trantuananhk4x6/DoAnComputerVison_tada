@@ -1,14 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
 // Import các components đã tạo trước đó
-import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import VideoProcessing from './pages/VideoProcessing';
-import LiveDetection from './pages/LiveDetection';
-import DetectionHistory from './pages/DetectionHistory';
+import AppLayout from './components/AppLayout';
+import Dashboard from './components/Dashboard';
+import VideoProcessing from './components/VideoProcessing';
+import TrackingHistory from './components/TrackingHistory';
 import NotFound from './components/NotFound';
 
 // Create light and dark theme
@@ -59,3 +58,38 @@ const createAppTheme = (mode) => createTheme({
     MuiPaper: {
       styleOverrides: {
         root: {
+          borderRadius: 8,
+        },
+      },
+    },
+  },
+});
+
+function App() {
+  const [mode, setMode] = useState('light');
+
+  const handleThemeChange = () => {
+    setMode(mode === 'light' ? 'dark' : 'light');
+  };
+
+  const theme = createAppTheme(mode);
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Router>
+        <AppLayout mode={mode} onThemeChange={handleThemeChange}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/video-processing" element={<VideoProcessing />} />
+            <Route path="/tracking-history" element={<TrackingHistory />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </AppLayout>
+      </Router>
+    </ThemeProvider>
+  );
+}
+
+export default App;
